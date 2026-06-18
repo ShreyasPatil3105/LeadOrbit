@@ -15,7 +15,15 @@ class LeadImportJobPagination(PageNumberPagination):
 class LeadViewSet(viewsets.ModelViewSet):
     serializer_class = LeadSerializer
     queryset = Lead.objects.all()
-    manager_actions = {'create', 'update', 'partial_update', 'destroy', 'delete_all', 'import_csv'}
+    manager_actions = frozenset({
+        'create',
+        'update',
+        'partial_update',
+        'destroy',
+        'delete_all',
+        'import_csv',
+        'assign_tags',
+    })
 
     def get_permissions(self):
         permissions = super().get_permissions()
@@ -156,7 +164,7 @@ class LeadImportJobViewSet(viewsets.ReadOnlyModelViewSet):
 class TagViewSet(viewsets.ModelViewSet):
     serializer_class = TagSerializer
     queryset = Tag.objects.all()
-    manager_actions = {'create', 'update', 'partial_update', 'destroy'}
+    manager_actions = frozenset({'create', 'update', 'partial_update', 'destroy'})
 
     def get_permissions(self):
         permissions = super().get_permissions()

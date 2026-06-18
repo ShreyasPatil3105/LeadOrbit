@@ -15,7 +15,7 @@ def _make_user(org, email='user@example.com', password='StrongPass123!'):
         email=email,
         password=password,
         organization=org,
-        role='ADMIN',
+        role=User.ROLE_ADMIN,
     )
 
 
@@ -98,25 +98,25 @@ class LeadIsolationAPITests(APITestCase):
             email='orga@example.com',
             password='StrongPass123!',
             organization=self.org_a,
-            role='ADMIN',
+            role=User.ROLE_ADMIN,
         )
         self.user_b = User.objects.create_user(
             email='orgb@example.com',
             password='StrongPass123!',
             organization=self.org_b,
-            role='ADMIN',
+            role=User.ROLE_ADMIN,
         )
         self.member_a = User.objects.create_user(
             email='member-a@example.com',
             password='StrongPass123!',
             organization=self.org_a,
-            role='MEMBER',
+            role=User.ROLE_MEMBER,
         )
         self.manager_a = User.objects.create_user(
             email='manager-a@example.com',
             password='StrongPass123!',
             organization=self.org_a,
-            role='MANAGER',
+            role=User.ROLE_MANAGER,
         )
 
         self.lead_a = Lead.objects.create(
