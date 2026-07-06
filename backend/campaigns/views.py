@@ -29,6 +29,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
         'launch',
         'pause',
         'resume',
+        'process_now',  # ADDED - FIXES #589
     })
 
     def get_permissions(self):
@@ -339,7 +340,11 @@ class SequenceStepViewSet(viewsets.ModelViewSet):
         return permissions
 
     def get_queryset(self):
-        return SequenceStep.objects.filter(organization=self.request.user.organization)
+        campaign_pk = self.kwargs.get('campaign_pk')
+        return SequenceStep.objects.filter(
+            organization=self.request.user.organization,
+            campaign_id=campaign_pk
+        )
 
     def perform_create(self, serializer):
         campaign_id = self.kwargs.get('campaign_pk')
