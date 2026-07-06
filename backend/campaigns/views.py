@@ -339,7 +339,11 @@ class SequenceStepViewSet(viewsets.ModelViewSet):
         return permissions
 
     def get_queryset(self):
-        return SequenceStep.objects.filter(organization=self.request.user.organization)
+        campaign_pk = self.kwargs.get('campaign_pk')
+        return SequenceStep.objects.filter(
+            organization=self.request.user.organization,
+            campaign_id=campaign_pk
+        )
 
     def perform_create(self, serializer):
         campaign_id = self.kwargs.get('campaign_pk')
@@ -867,5 +871,6 @@ class ClickTrackingView(APIView):
         # Original Destination par redirect karna
         decoded_dest = urllib.parse.unquote(dest_url)
         return HttpResponseRedirect(decoded_dest)
+
 
         
