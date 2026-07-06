@@ -406,6 +406,8 @@ class WebhookView(APIView):
         }
     
     def post(self, request, *args, **kwargs):
+        from django.core.signing import Signer, BadSignature
+        
         event_type = (request.data.get('event') or '').strip().lower()
         lead_email = request.data.get('email')
         message_id = request.data.get('message_id') or request.data.get('messageId')
@@ -418,14 +420,51 @@ class WebhookView(APIView):
                 if event_type in {'bounce', 'reply'} and message_id:
                     tracked_statuses.append('FINISHED')
 
-                # Find active campaign lead matching this email
-                base_qs = CampaignLead.objects.filter(
-                    lead__email=lead_email,
-                    status__in=tracked_statuses,
-                )
+                # ── Secure token verification (Fast Path) ──
+                campaign_lead_id = None
+                organization_id = None
+
                 if message_id:
-                    base_qs = base_qs.filter(last_sent_message_id=message_id)
-                cleads = list(base_qs)
+                    signer = Signer()
+                    try:
+                        # Clean delimiters and extract local part
+                        local_part = message_id.strip('<>').split('@')[0]
+                        unsigned_payload = signer.unsign(local_part)
+                        campaign_lead_id, organization_id = unsigned_payload.split(':')
+                    except (BadSignature, ValueError):
+                        # Invalid signature - will fall back to email lookup
+                        pass
+
+                # Layer 1: Secure token verification
+                if campaign_lead_id and organization_id:
+                    cleads = CampaignLead.objects.filter(
+                        id=campaign_lead_id,
+                        organization_id=organization_id,
+                        status__in=tracked_statuses
+                    )
+                    cleads = list(cleads)
+                else:
+                    # Layer 2: Legacy fallback with cross-tenant protection
+                    base_qs = CampaignLead.objects.filter(
+                        lead__email=lead_email,
+                        status__in=tracked_statuses,
+                    )
+                    if message_id:
+                        base_qs = base_qs.filter(last_sent_message_id=message_id)
+                    cleads = list(base_qs)
+
+                    # Security Guard: Reject cross-tenant matches
+                    if len(cleads) > 1:
+                        org_ids = {str(cl.organization_id) for cl in cleads}
+                        if len(org_ids) > 1:
+                            logger.warning(
+                                f"Aborted webhook update for email {lead_email}: "
+                                f"ambiguous tenant context across orgs {org_ids}."
+                            )
+                            return Response(
+                                {"error": "Ambiguous tenant context"},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
 
                 now = timezone.now()
                 from campaigns.tasks import (
