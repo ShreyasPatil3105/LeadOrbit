@@ -62,6 +62,24 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
 ]
 
+# ─── REGISTRATION SECURITY SETTINGS ──────────────────
+# Restrict registration to specific email domains (empty = no restriction)
+ALLOWED_REGISTRATION_DOMAINS = os.getenv(
+    'ALLOWED_REGISTRATION_DOMAINS',
+    ''
+).split(',')
+# Remove empty strings
+ALLOWED_REGISTRATION_DOMAINS = [d.strip() for d in ALLOWED_REGISTRATION_DOMAINS if d.strip()]
+
+# Rate limiting for registration (5 per hour per IP)
+REGISTRATION_RATE_LIMIT = int(os.getenv('REGISTRATION_RATE_LIMIT', '5'))
+REGISTRATION_RATE_LIMIT_WINDOW = int(os.getenv('REGISTRATION_RATE_LIMIT_WINDOW', '3600'))  # 1 hour in seconds
+
+# Email verification token expiry (24 hours)
+VERIFICATION_TOKEN_EXPIRY = int(os.getenv('VERIFICATION_TOKEN_EXPIRY', '86400'))
+
+# ─── END REGISTRATION SECURITY SETTINGS ─────────────
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -236,3 +254,12 @@ GOOGLE_SCOPES = [
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', _read_local_env_value('TWILIO_ACCOUNT_SID', ''))
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', _read_local_env_value('TWILIO_AUTH_TOKEN', ''))
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', _read_local_env_value('TWILIO_PHONE_NUMBER', ''))
+
+# ─── Cache Configuration (for rate limiting) ────────
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'unique-snowflake',
+    }
+}
+
