@@ -54,7 +54,8 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 if not SECRET_KEY:
     raise ValueError("SECRET_KEY environment variable is not set. Please set it in your .env file or environment.")
 
-DEBUG = os.getenv('DEBUG', 'True').lower() in ('true', '1', 'yes')
+# ─── CRITICAL SECURITY FIX: DEBUG defaults to False (fail-safe) ───
+DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes')
 TESTING = 'test' in sys.argv
 
 # ─── CRITICAL SECURITY FIX: Encryption key must be set in production ───
@@ -248,4 +249,23 @@ GOOGLE_SCOPES = [
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', _read_local_env_value('TWILIO_ACCOUNT_SID', ''))
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', _read_local_env_value('TWILIO_AUTH_TOKEN', ''))
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', _read_local_env_value('TWILIO_PHONE_NUMBER', ''))
+
+# ─── Cache Configuration (for rate limiting) ────────
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': os.getenv('REDIS_URL', 'redis://localhost:6379/1'),
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            'PARSER_CLASS': 'redis.connection.HiredisParser',
+            'CONNECTION_POOL_CLASS': 'redis.BlockingConnectionPool',
+            'CONNECTION_POOL_CLASS_KWARGS': {
+                'max_connections': 50,
+                'timeout': 20,
+            },
+            'MAX_CONNECTIONS': 1000,
+            'PICKLE_VERSION': -1,
+        },
+    }
+}
 
