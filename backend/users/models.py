@@ -31,8 +31,16 @@ class User(AbstractBaseUser, PermissionsMixin, TenantModel):
     )
     email = models.EmailField(unique=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_MEMBER)
-    is_active = models.BooleanField(default=True)
+    
+    # ─── CRITICAL SECURITY FIX: Users inactive until email verification ───
+    # Changed default from True to False (Fix #616)
+    is_active = models.BooleanField(default=False)
+    
     is_staff = models.BooleanField(default=False)
+
+    # ─── CRITICAL SECURITY FIX: Two-Factor Authentication (Fix #628) ───
+    has_2fa = models.BooleanField(default=False)
+    otp_secret = models.CharField(max_length=255, blank=True, null=True)
 
     objects = UserManager()
 
@@ -41,3 +49,5 @@ class User(AbstractBaseUser, PermissionsMixin, TenantModel):
 
     def __str__(self):
         return self.email
+
+        
