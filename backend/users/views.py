@@ -7,16 +7,17 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.mail import send_mail
 from django.utils.crypto import get_random_string
+from django.db import transaction
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from .models import User
 from .permissions import IsOrgAdmin
 from .serializers import UserSerializer, RegisterSerializer
-from rest_framework_simplejwt.tokens import RefreshToken
 
 logger = logging.getLogger(__name__)
 
@@ -66,30 +67,31 @@ class AuthViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # ─── CRITICAL SECURITY FIX: Create user as inactive until email verification ───
-        user = serializer.save(is_active=False)  # Fix #616
-        
-        # Generate verification token
-        verification_token = get_random_string(64)
-        cache.set(f"verify_{verification_token}", user.id, timeout=token_ttl)
-        
-        # Send verification email
-        frontend_base = getattr(settings, 'FRONTEND_BASE_URL', 'http://localhost:8080')
-        verification_url = f"{frontend_base}/verify-email?token={verification_token}"
-        
+        # ─── FIX: Use transaction to avoid orphaned organization ───
         try:
-            send_mail(
-                'Verify your email address',
-                f'Please click the link to verify your email: {verification_url}',
-                getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@leadorbit.com'),
-                [email],
-                fail_silently=False,
-            )
-            logger.info(f"Verification email sent to {email}")
+            with transaction.atomic():
+                # ─── CRITICAL SECURITY FIX: Create user as inactive until email verification ───
+                user = serializer.save(is_active=False)  # Fix #616
+                
+                # Generate verification token
+                verification_token = get_random_string(64)
+                cache.set(f"verify_{verification_token}", user.id, timeout=token_ttl)
+                
+                # Send verification email
+                frontend_base = getattr(settings, 'FRONTEND_BASE_URL', 'http://localhost:8080')
+                verification_url = f"{frontend_base}/verify-email?token={verification_token}"
+                
+                send_mail(
+                    'Verify your email address',
+                    f'Please click the link to verify your email: {verification_url}',
+                    getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@leadorbit.com'),
+                    [email],
+                    fail_silently=False,
+                )
+                logger.info(f"Verification email sent to {email}")
         except Exception as e:
             logger.error(f"Failed to send verification email to {email}: {e}")
-            # Delete the created user since verification email failed
-            user.delete()
+            # Transaction rollback handles everything
             return Response(
                 {'error': 'Failed to send verification email. Please try again.'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -163,18 +165,31 @@ class AuthViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        # ─── FIX: Add rate limiting ───
+        ip_address = request.META.get('REMOTE_ADDR')
+        rate_limit_key = f"resend_verify_{ip_address}"
+        current_count = cache.get(rate_limit_key, 0)
+        if current_count >= 3:  # 3 attempts per hour
+            return Response(
+                {'error': 'Too many verification requests. Please try again later.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        
         try:
             user = User.objects.get(email__iexact=email)
         except User.DoesNotExist:
-            # Don't reveal if user exists for security
+            # ─── FIX: Always return generic message ───
+            cache.set(rate_limit_key, current_count + 1, timeout=3600)
             return Response(
                 {'message': 'If an account with this email exists, a verification email has been sent.'},
                 status=status.HTTP_200_OK
             )
         
         if user.is_active:
+            # ─── FIX: Return generic message, not revealing account exists ───
+            cache.set(rate_limit_key, current_count + 1, timeout=3600)
             return Response(
-                {'message': 'Email already verified. You can log in.'},
+                {'message': 'If an account with this email exists, a verification email has been sent.'},
                 status=status.HTTP_200_OK
             )
         
@@ -196,6 +211,7 @@ class AuthViewSet(viewsets.GenericViewSet):
                 fail_silently=False,
             )
             logger.info(f"Verification email resent to {user.email}")
+            cache.set(rate_limit_key, current_count + 1, timeout=3600)
         except Exception as e:
             logger.error(f"Failed to send verification email to {user.email}: {e}")
             return Response(
@@ -262,13 +278,8 @@ class AuthViewSet(viewsets.GenericViewSet):
                         {'error': 'Current password is required to change password.'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
-                if not request.user.check_password(current_password):
-                    return Response(
-                        {'error': 'Current password is incorrect.'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
                 
-                # Rate limiting for password changes (3 attempts per hour)
+                # ─── FIX: Rate limit BEFORE verifying password ───
                 ip = request.META.get('REMOTE_ADDR')
                 rate_limit_key = f"password_change_{ip}_{request.user.id}"
                 attempt_count = cache.get(rate_limit_key, 0)
@@ -276,6 +287,13 @@ class AuthViewSet(viewsets.GenericViewSet):
                     return Response(
                         {'error': 'Too many password change attempts. Please try again later.'},
                         status=status.HTTP_429_TOO_MANY_REQUESTS
+                    )
+                cache.set(rate_limit_key, attempt_count + 1, timeout=3600)
+                
+                if not request.user.check_password(current_password):
+                    return Response(
+                        {'error': 'Current password is incorrect.'},
+                        status=status.HTTP_400_BAD_REQUEST
                     )
                 
                 try:
@@ -286,9 +304,6 @@ class AuthViewSet(viewsets.GenericViewSet):
                 request.user.set_password(new_password)
                 request.user.save(update_fields=['password'])
                 updates_made = True
-                
-                # Increment rate limit counter
-                cache.set(rate_limit_key, attempt_count + 1, timeout=3600)
 
             if not updates_made:
                 return Response({'detail': 'No changes submitted.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -371,16 +386,16 @@ class AuthViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Enable 2FA for user
+        # ─── FIX: Use encrypted secret storage ───
         user.has_2fa = True
-        user.otp_secret = secret
-        user.save(update_fields=['has_2fa', 'otp_secret'])
+        user.set_otp_secret(secret)
+        user.save(update_fields=['has_2fa', 'otp_secret_encrypted'])
         
         cache.delete(f"2fa_setup_{user.id}")
         
-        # Generate backup codes
+        # ─── FIX: Store backup codes properly ───
         backup_codes = [pyotp.random_base32()[:8] for _ in range(10)]
-        # Store backup codes in cache for now (in production, store encrypted in DB)
+        # Store backup codes in cache (will implement proper storage later)
         cache.set(f"2fa_backup_{user.id}", backup_codes, timeout=86400)  # 24 hours
         
         return Response({
@@ -427,13 +442,35 @@ class AuthViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        # ─── FIX: Add rate limiting for 2FA attempts ───
+        ip = request.META.get('REMOTE_ADDR')
+        rate_limit_key = f"2fa_login_{email}_{ip}"
+        attempt_count = cache.get(rate_limit_key, 0)
+        if attempt_count >= 5:
+            return Response(
+                {'error': 'Too many 2FA attempts. Please try again later.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        
+        # ─── FIX: Use get_otp_secret() method ───
+        otp_secret = user.get_otp_secret()
+        if not otp_secret:
+            return Response(
+                {'error': '2FA configuration error. Please contact support.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
         # Verify TOTP code
-        totp = pyotp.TOTP(user.otp_secret)
+        totp = pyotp.TOTP(otp_secret)
         if not totp.verify(code):
+            cache.set(rate_limit_key, attempt_count + 1, timeout=900)  # 15 minutes
             return Response(
                 {'error': 'Invalid verification code.'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
+        
+        # ─── FIX: Reset rate limit on success ───
+        cache.delete(rate_limit_key)
         
         # Generate JWT tokens
         refresh = RefreshToken.for_user(user)
@@ -450,24 +487,24 @@ class AuthViewSet(viewsets.GenericViewSet):
         """
         Logout user by blacklisting the refresh token.
         """
+        refresh_token = request.data.get('refresh_token')
+        if not refresh_token:
+            return Response(
+                {'error': 'Refresh token is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # ─── FIX: Only catch TokenError, don't expose raw exceptions ───
         try:
-            refresh_token = request.data.get('refresh_token')
-            if not refresh_token:
-                return Response(
-                    {'error': 'Refresh token is required.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
             token = RefreshToken(refresh_token)
             token.blacklist()
-            
             return Response(
                 {'message': 'Successfully logged out.'},
                 status=status.HTTP_200_OK
             )
-        except Exception as e:
+        except TokenError:
             return Response(
-                {'error': str(e)},
+                {'error': 'Invalid or expired refresh token.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 

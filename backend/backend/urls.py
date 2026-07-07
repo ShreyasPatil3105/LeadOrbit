@@ -57,7 +57,7 @@ urlpatterns = [
     # Authentication endpoints
     path('api/v1/token/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/v1/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    path('api/v1/auth/logout/', AuthViewSet.as_view({'post': 'logout'}), name='logout'),  # ADDED - Fix #606
+    # ─── FIX: Removed duplicate logout route (already handled by router) ───
     
     # Webhooks and Analytics
     path('api/v1/webhooks/email/', WebhookView.as_view(), name='email_webhook'),
@@ -81,6 +81,7 @@ urlpatterns = [
     path('api/v1/unsubscribe/<uuid:lead_id>/<str:token>/', unsubscribe_view, name='unsubscribe'),
     
     # Router URLs (includes campaigns, leads, auth, etc.)
+    # ─── FIX: Router handles auth endpoints including logout ───
     path('api/v1/', include(router.urls)),
 ]
 

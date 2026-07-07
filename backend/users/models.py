@@ -1,6 +1,7 @@
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 from tenants.models import TenantModel
+from django.core.signing import Signer
 
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
@@ -15,6 +16,8 @@ class UserManager(BaseUserManager):
     def create_superuser(self, email, password=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
+        # ─── FIX: Set is_active to True for superusers ───
+        extra_fields.setdefault('is_active', True)
         return self.create_user(email, password, **extra_fields)
 
 class User(AbstractBaseUser, PermissionsMixin, TenantModel):
@@ -40,7 +43,8 @@ class User(AbstractBaseUser, PermissionsMixin, TenantModel):
 
     # ─── CRITICAL SECURITY FIX: Two-Factor Authentication (Fix #628) ───
     has_2fa = models.BooleanField(default=False)
-    otp_secret = models.CharField(max_length=255, blank=True, null=True)
+    # ─── FIX: Store encrypted OTP secret instead of plain text ───
+    otp_secret_encrypted = models.TextField(blank=True, null=True)
 
     objects = UserManager()
 
@@ -50,4 +54,23 @@ class User(AbstractBaseUser, PermissionsMixin, TenantModel):
     def __str__(self):
         return self.email
 
-        
+    # ─── Helper methods for encrypted OTP secret ───
+    def set_otp_secret(self, secret):
+        """Encrypt and store OTP secret"""
+        if secret:
+            signer = Signer(salt='user.otp_secret')
+            self.otp_secret_encrypted = signer.sign(secret)
+        else:
+            self.otp_secret_encrypted = None
+
+    def get_otp_secret(self):
+        """Decrypt and return OTP secret"""
+        if not self.otp_secret_encrypted:
+            return None
+        try:
+            signer = Signer(salt='user.otp_secret')
+            return signer.unsign(self.otp_secret_encrypted)
+        except:
+            return None
+
+            

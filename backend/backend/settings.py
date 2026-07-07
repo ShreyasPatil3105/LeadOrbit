@@ -69,7 +69,8 @@ if not MAILBOX_CREDENTIALS_ENCRYPTION_KEY and not DEBUG and not TESTING:
 if not MAILBOX_CREDENTIALS_ENCRYPTION_KEY:
     MAILBOX_CREDENTIALS_ENCRYPTION_KEY = 'fallback-insecure-key-for-local-dev-and-testing'
 
-ALLOWED_HOSTS = ['*']
+# ─── FIX: ALLOWED_HOSTS from environment, not wildcard ───
+ALLOWED_HOSTS = [h.strip() for h in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if h.strip()]
 
 # ─── CRITICAL SECURITY FIX: CORS Configuration ──────────────────────────
 # Use explicit whitelist instead of allowing all origins
@@ -228,8 +229,8 @@ SIMPLE_JWT = {
     # Explicitly set algorithm to HS256 (or RS256 for production)
     'ALGORITHM': 'HS256',  # Fix #618
     
-    # Use a separate signing key or fallback to SECRET_KEY
-    'SIGNING_KEY': os.getenv('JWT_SIGNING_KEY', None),
+    # ─── FIX: Fallback to SECRET_KEY if JWT_SIGNING_KEY not set ───
+    'SIGNING_KEY': os.getenv('JWT_SIGNING_KEY') or SECRET_KEY,
     
     'USER_ID_FIELD': 'id',
     'USER_ID_CLAIM': 'user_id',
@@ -333,20 +334,18 @@ TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', _read_local_env_value('TWIL
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', _read_local_env_value('TWILIO_AUTH_TOKEN', ''))
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', _read_local_env_value('TWILIO_PHONE_NUMBER', ''))
 
-# ─── Cache Configuration (for rate limiting) ────────
+# ─── FIX: Cache Configuration (for rate limiting) ────────
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
         'LOCATION': os.getenv('REDIS_URL', 'redis://localhost:6379/1'),
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-            'PARSER_CLASS': 'redis.connection.HiredisParser',
-            'CONNECTION_POOL_CLASS': 'redis.BlockingConnectionPool',
-            'CONNECTION_POOL_CLASS_KWARGS': {
+            # ─── FIX: Use CONNECTION_POOL_KWARGS instead of deprecated options ───
+            'CONNECTION_POOL_KWARGS': {
                 'max_connections': 50,
                 'timeout': 20,
             },
-            'MAX_CONNECTIONS': 1000,
             'PICKLE_VERSION': -1,
         },
     }
