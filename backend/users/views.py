@@ -23,11 +23,17 @@ class AuthViewSet(viewsets.GenericViewSet):
         """
         Registers a new user account with email verification.
         """
-        # Rate limiting: 5 registrations per hour per IP
+        # Rate limiting: read from settings
+        rate_limit = getattr(settings, 'REGISTRATION_RATE_LIMIT', 5)
+        window = getattr(settings, 'REGISTRATION_RATE_LIMIT_WINDOW', 3600)
+        token_ttl = getattr(settings, 'VERIFICATION_TOKEN_EXPIRY', 86400)
+        
         ip_address = request.META.get('REMOTE_ADDR')
         rate_limit_key = f"register_rate_{ip_address}"
         
-        if cache.get(rate_limit_key, 0) >= 5:
+        # Check rate limit
+        current_count = cache.get(rate_limit_key, 0)
+        if current_count >= rate_limit:
             return Response(
                 {'error': 'Too many registration attempts. Please try again later.'},
                 status=status.HTTP_429_TOO_MANY_REQUESTS
@@ -61,7 +67,7 @@ class AuthViewSet(viewsets.GenericViewSet):
         
         # Generate verification token
         verification_token = get_random_string(64)
-        cache.set(f"verify_{verification_token}", user.id, timeout=86400)  # 24 hours
+        cache.set(f"verify_{verification_token}", user.id, timeout=token_ttl)
         
         # Send verification email
         frontend_base = getattr(settings, 'FRONTEND_BASE_URL', 'http://localhost:8080')
@@ -78,10 +84,15 @@ class AuthViewSet(viewsets.GenericViewSet):
             logger.info(f"Verification email sent to {email}")
         except Exception as e:
             logger.error(f"Failed to send verification email to {email}: {e}")
+            # Delete the created user since verification email failed
+            user.delete()
+            return Response(
+                {'error': 'Failed to send verification email. Please try again.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
         
-        # Increment rate limit counter
-        cache.incr(rate_limit_key)
-        cache.expire(rate_limit_key, 3600)  # 1 hour
+        # Increment rate limit counter - set key with timeout first
+        cache.set(rate_limit_key, current_count + 1, timeout=window)
         
         return Response(
             {
@@ -91,12 +102,12 @@ class AuthViewSet(viewsets.GenericViewSet):
             status=status.HTTP_201_CREATED
         )
 
-    @action(detail=False, methods=['get'], permission_classes=[AllowAny])
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def verify_email(self, request):
         """
-        Verify user's email with token.
+        Verify user's email with token using POST method.
         """
-        token = request.GET.get('token')
+        token = request.data.get('token')
         
         if not token:
             return Response(
@@ -123,14 +134,9 @@ class AuthViewSet(viewsets.GenericViewSet):
             user.save()
             cache.delete(f"verify_{token}")
             
-            # Generate JWT tokens after successful verification
-            refresh = RefreshToken.for_user(user)
-            
             return Response(
                 {
                     'message': 'Email verified successfully. You can now log in.',
-                    'refresh': str(refresh),
-                    'access': str(refresh.access_token),
                 },
                 status=status.HTTP_200_OK
             )
@@ -140,22 +146,38 @@ class AuthViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def resend_verification(self, request):
         """
         Resend verification email for unverified users.
         """
-        user = request.user
+        email = request.data.get('email')
         
-        if user.is_active:
+        if not email:
             return Response(
-                {'message': 'Email already verified.'},
+                {'error': 'Email is required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            # Don't reveal if user exists for security
+            return Response(
+                {'message': 'If an account with this email exists, a verification email has been sent.'},
+                status=status.HTTP_200_OK
+            )
+        
+        if user.is_active:
+            return Response(
+                {'message': 'Email already verified. You can log in.'},
+                status=status.HTTP_200_OK
+            )
+        
         # Generate new verification token
+        token_ttl = getattr(settings, 'VERIFICATION_TOKEN_EXPIRY', 86400)
         verification_token = get_random_string(64)
-        cache.set(f"verify_{verification_token}", user.id, timeout=86400)  # 24 hours
+        cache.set(f"verify_{verification_token}", user.id, timeout=token_ttl)
         
         # Send verification email
         frontend_base = getattr(settings, 'FRONTEND_BASE_URL', 'http://localhost:8080')
@@ -249,6 +271,5 @@ class AuthViewSet(viewsets.GenericViewSet):
             {'message': 'Organization successfully deleted.'},
             status=status.HTTP_200_OK,
         )
-
 
         
